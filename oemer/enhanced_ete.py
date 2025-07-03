@@ -18,14 +18,14 @@ from oemer.note_group_extraction import extract as group_extract
 from oemer.symbol_extraction import extract as symbol_extract
 from oemer.rhythm_extraction import extract as rhythm_extract
 from oemer.build_system import MusicXMLBuilder
-from oemer.instrument_recognition import analyze_score_with_ml
+from oemer.percussion_distribution import analyze_percussion_score
 from oemer.draw_teaser import teaser
 
 logger = get_logger(__name__)
 
 
 def enhanced_extract(args) -> Dict[str, Any]:
-    """Enhanced extraction with ML analysis"""
+    """Enhanced extraction with percussion voice distribution"""
     
     # Original OMR processing
     img_path = Path(args.img_path)
@@ -123,7 +123,7 @@ def enhanced_extract(args) -> Dict[str, Any]:
     logger.info("Extracting rhythm types")
     rhythm_extract()
 
-    # Prepare score data for ML analysis
+    # Prepare score data for percussion analysis
     score_data = {
         'notes': notes,
         'note_groups': groups,
@@ -131,13 +131,16 @@ def enhanced_extract(args) -> Dict[str, Any]:
         'clefs': clefs,
         'sfns': sfns,
         'rests': rests,
-        'barlines': barlines,
-        'measures': {}  # This would be populated with measure information
+        'barlines': barlines
     }
 
-    # ML Analysis
-    logger.info("Performing ML analysis for instrument recognition and voice distribution")
-    ml_analysis = analyze_score_with_ml(score_data, num_players=args.num_players)
+    # Percussion Voice Distribution Analysis
+    logger.info(f"Analyzing percussion score for {args.num_players} players")
+    logger.info("Applying main/accessory instrument distribution rules:")
+    logger.info("  Main instruments (different players): Bass Drum, Cymbals, Snare, Tam Tam, Xylophone, Glockenspiel, Marimbaphone, Vibraphone")
+    logger.info("  Accessory instruments (can be shared): Tambourine, Triangle, Whip, Tomtoms, etc.")
+    
+    percussion_analysis = analyze_percussion_score(score_data, num_players=args.num_players)
 
     # Build MusicXML with enhanced information
     logger.info("Building enhanced MusicXML document")
@@ -154,9 +157,9 @@ def enhanced_extract(args) -> Dict[str, Any]:
     with open(out_path, "wb") as ff:
         ff.write(xml)
 
-    # Save ML analysis results
-    analysis_path = out_path.replace(".musicxml", "_analysis.json")
-    save_analysis_results(ml_analysis, analysis_path)
+    # Save percussion analysis results
+    analysis_path = out_path.replace(".musicxml", "_percussion_analysis.json")
+    save_percussion_analysis(percussion_analysis, analysis_path)
 
     # Generate visualization
     img = teaser()
@@ -165,7 +168,7 @@ def enhanced_extract(args) -> Dict[str, Any]:
     return {
         'musicxml_path': out_path,
         'analysis_path': analysis_path,
-        'ml_analysis': ml_analysis
+        'percussion_analysis': percussion_analysis
     }
 
 
@@ -209,52 +212,51 @@ def register_note_id():
         notes[idx].id = idx
 
 
-def save_analysis_results(analysis: Dict[str, Any], filepath: str):
-    """Save ML analysis results to JSON file"""
+def save_percussion_analysis(analysis: Dict[str, Any], filepath: str):
+    """Save percussion analysis results to JSON file"""
     import json
     
     # Convert complex objects to serializable format
     serializable_analysis = {
-        'instrument': analysis['instrument'].value,
-        'total_notes': len(analysis['note_events']),
-        'simultaneous_events': len(analysis['simultaneous_notes']),
-        'voice_count': len(analysis['voices']),
-        'voice_statistics': analysis['voice_statistics'],
-        'bar_complexities': analysis['bar_complexities'],
-        'voice_details': []
+        'summary': analysis['summary'],
+        'classification_rules': analysis['classification_rules'],
+        'total_note_events': len(analysis['note_events']),
+        'player_assignments': []
     }
     
-    # Add voice details
-    for voice in analysis['voices']:
-        voice_detail = {
-            'voice_id': voice.voice_id,
-            'player_id': voice.player_id,
-            'note_count': len(voice.note_events),
-            'complexity_score': voice.complexity_score,
-            'note_events': [
+    # Add detailed player assignments
+    for assignment in analysis['assignments']:
+        assignment_detail = {
+            'player_id': assignment.player_id,
+            'main_instrument': assignment.main_instrument.value if assignment.main_instrument else None,
+            'accessory_instruments': [inst.value for inst in assignment.accessory_instruments],
+            'total_notes': assignment.total_notes,
+            'complexity_score': assignment.complexity_score,
+            'note_details': [
                 {
-                    'bar': event.bar_number,
-                    'beat': event.beat_position,
-                    'pitch': event.pitch,
-                    'duration': event.duration,
-                    'velocity': event.velocity
+                    'bar': note.bar_number,
+                    'beat': note.beat_position,
+                    'instrument': note.instrument,
+                    'is_main_instrument': note.is_main_instrument,
+                    'duration': note.duration,
+                    'velocity': note.velocity
                 }
-                for event in voice.note_events[:10]  # Limit to first 10 for brevity
+                for note in assignment.notes[:20]  # Limit to first 20 for brevity
             ]
         }
-        serializable_analysis['voice_details'].append(voice_detail)
+        serializable_analysis['player_assignments'].append(assignment_detail)
     
     with open(filepath, 'w') as f:
         json.dump(serializable_analysis, f, indent=2)
     
-    logger.info(f"Analysis results saved to {filepath}")
+    logger.info(f"Percussion analysis results saved to {filepath}")
 
 
 def get_enhanced_parser():
     """Get argument parser with enhanced options"""
     parser = argparse.ArgumentParser(
-        "Enhanced Oemer",
-        description="Enhanced OMR with ML instrument recognition and voice distribution",
+        "Enhanced Oemer - Percussion Voice Distribution",
+        description="Enhanced OMR with intelligent percussion voice distribution based on main/accessory instrument rules",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument("img_path", help="Path to the image.", type=str)
@@ -268,8 +270,6 @@ def get_enhanced_parser():
         "-d", "--without-deskew", help="Disable deskewing step.", action='store_true')
     parser.add_argument(
         "--num-players", help="Number of players available for percussion.", type=int, default=2)
-    parser.add_argument(
-        "--distribution-rules", help="JSON file with custom distribution rules.", type=str, default=None)
     
     return parser
 
@@ -290,9 +290,20 @@ def main():
     
     logger.info(f"Enhanced OMR processing complete!")
     logger.info(f"MusicXML saved to: {result['musicxml_path']}")
-    logger.info(f"Analysis saved to: {result['analysis_path']}")
-    logger.info(f"Detected instrument: {result['ml_analysis']['instrument'].value}")
-    logger.info(f"Generated {len(result['ml_analysis']['voices'])} voices for {args.num_players} players")
+    logger.info(f"Percussion analysis saved to: {result['analysis_path']}")
+    
+    # Print summary
+    summary = result['percussion_analysis']['summary']
+    logger.info(f"Percussion Distribution Summary:")
+    logger.info(f"  Total players used: {summary['total_players']}")
+    logger.info(f"  Main instruments assigned: {summary['main_instruments_assigned']}")
+    logger.info(f"  Accessory instruments assigned: {summary['accessory_instruments_assigned']}")
+    logger.info(f"  Total notes distributed: {summary['total_notes']}")
+    
+    for player_detail in summary['player_details']:
+        main_inst = player_detail['main_instrument'] or "None"
+        acc_insts = ", ".join(player_detail['accessory_instruments']) or "None"
+        logger.info(f"  Player {player_detail['player_id']}: Main={main_inst}, Accessories=[{acc_insts}], Notes={player_detail['note_count']}")
 
 
 def clear_data():
